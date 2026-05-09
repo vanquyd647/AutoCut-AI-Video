@@ -1,0 +1,450 @@
+# AutoCut AI Video — BE (Python) + FE (Vite)
+
+Ứng dụng tự động phân tích, cắt ghép và chỉnh sửa video bằng Gemini AI — tương tự CapCut nhưng hoàn toàn tự động. Tách Backend + Frontend rõ ràng.
+
+## Kiến trúc tổng quan
+
+```mermaid
+graph LR
+    FE["🎨 Frontend<br/>Vite + React + TS"] -->|REST API + WebSocket| BE["⚙️ Backend<br/>Python FastAPI"]
+    BE -->|Multimodal API| GEMINI["🤖 Gemini AI"]
+    BE -->|Video Processing| FFMPEG["🎬 FFmpeg + MoviePy"]
+    BE -->|File I/O| STORAGE["📁 input/ output/ temp/"]
+```
+
+## Cấu trúc dự án
+
+```
+D:\AutoCutAIVideo\
+│
+├── backend/                          # 🐍 Python FastAPI
+│   ├── main.py                       # FastAPI entry point
+│   ├── requirements.txt              # Python dependencies
+│   ├── .env.example                  # GEMINI_API_KEY config
+│   ├── config.py                     # App settings
+│   │
+│   ├── api/
+│   │   ├── __init__.py
+│   │   ├── routes_upload.py          # POST /upload — upload videos
+│   │   ├── routes_analyze.py         # POST /analyze — AI phân tích
+│   │   ├── routes_edit.py            # POST /edit — tạo edit plan + render
+│   │   ├── routes_export.py          # GET /export/{id} — download video
+│   │   └── routes_project.py         # CRUD project management
+│   │
+│   ├── core/
+│   │   ├── __init__.py
+│   │   ├── gemini_client.py          # Gemini API (pattern từ reference repo)
+│   │   ├── video_analyzer.py         # Phân tích video bằng Gemini multimodal
+│   │   ├── edit_planner.py           # AI lên kế hoạch edit timeline
+│   │   ├── video_editor.py           # Thực thi edit (FFmpeg + MoviePy)
+│   │   ├── effects.py               # Transitions, text overlay, color grading
+│   │   └── export.py                 # Xuất video final
+│   │
+│   ├── models/
+│   │   ├── __init__.py
+│   │   └── schemas.py                # Pydantic models (request/response)
+│   │
+│   ├── templates/
+│   │   ├── tiktok_vertical.json      # Preset 9:16 TikTok
+│   │   ├── youtube_horizontal.json   # Preset 16:9 YouTube
+│   │   └── instagram_reel.json       # Preset 9:16 Instagram
+│   │
+│   ├── storage/
+│   │   ├── input/                    # Video upload
+│   │   ├── output/                   # Video xuất
+│   │   └── temp/                     # File tạm
+│   │
+│   └── assets/
+│       └── fonts/                    # Fonts cho text overlay
+│
+├── frontend/                         # ⚡ Vite + React + TypeScript
+│   ├── index.html
+│   ├── package.json
+│   ├── tsconfig.json
+│   ├── vite.config.ts
+│   │
+│   ├── public/
+│   │   └── favicon.svg
+│   │
+│   └── src/
+│       ├── main.tsx                  # React entry
+│       ├── App.tsx                   # App root + router
+│       ├── index.css                 # Global styles + design tokens
+│       │
+│       ├── components/
+│       │   ├── UploadZone.tsx        # Drag-drop multi-video upload
+│       │   ├── VideoPreview.tsx      # Preview từng video + analysis
+│       │   ├── Timeline.tsx          # Timeline editor visual
+│       │   ├── EditPlanView.tsx      # Xem AI edit plan
+│       │   ├── StyleSelector.tsx     # Chọn style (TikTok, YouTube...)
+│       │   ├── ProgressBar.tsx       # Real-time progress
+│       │   ├── ExportPanel.tsx       # Download video hoàn chỉnh
+│       │   └── ApiKeyInput.tsx       # Nhập Gemini API key
+│       │
+│       ├── hooks/
+│       │   ├── useApi.ts            # HTTP client hooks
+│       │   └── useWebSocket.ts      # WebSocket progress updates
+│       │
+│       ├── services/
+│       │   └── api.ts               # API client (fetch wrapper)
+│       │
+│       └── types/
+│           └── index.ts             # Shared TypeScript types
+│
+└── README.md
+```
+
+## User Review Required
+
+> [!IMPORTANT]
+> **Gemini API Key**: Nhập qua Frontend UI → gửi cho Backend xử lý. Không hardcode.
+
+> [!IMPORTANT]
+> **FFmpeg**: Backend cần FFmpeg trên hệ thống. Sẽ auto-check khi startup.
+
+> [!WARNING]
+> **Video lớn**: Gemini API inline base64 giới hạn. Sẽ implement chunked analysis (tách video thành segments 20-30s để phân tích).
+
+## Proposed Changes
+
+---
+
+### Backend — Python FastAPI
+
+---
+
+#### [NEW] [main.py](file:///D:/AutoCutAIVideo/backend/main.py)
+
+FastAPI server với:
+- CORS cho frontend `localhost:5173`
+- Mount static files (`/storage/output`)
+- WebSocket endpoint cho progress updates
+- Auto-check FFmpeg availability on startup
+- Include all API routers
+
+#### [NEW] [config.py](file:///D:/AutoCutAIVideo/backend/config.py)
+
+```python
+# Settings via .env
+GEMINI_API_KEY: str          # từ frontend hoặc .env fallback
+GEMINI_MODEL: str = "gemini-2.5-flash"
+UPLOAD_DIR: Path
+OUTPUT_DIR: Path
+TEMP_DIR: Path
+MAX_VIDEO_SIZE_MB: int = 500
+ALLOWED_EXTENSIONS: list = [".mp4", ".mov", ".avi", ".mkv", ".webm"]
+```
+
+#### [NEW] [requirements.txt](file:///D:/AutoCutAIVideo/backend/requirements.txt)
+
+| Package | Purpose |
+|---------|---------|
+| `fastapi` | Web framework |
+| `uvicorn[standard]` | ASGI server |
+| `python-multipart` | File upload |
+| `moviepy` | Video editing |
+| `ffmpeg-python` | FFmpeg wrapper |
+| `httpx` | Async HTTP (Gemini API) |
+| `python-dotenv` | .env loading |
+| `websockets` | Real-time progress |
+| `pydantic` | Data validation |
+| `pillow` | Image processing |
+
+---
+
+#### [NEW] [gemini_client.py](file:///D:/AutoCutAIVideo/backend/core/gemini_client.py)
+
+Áp dụng pattern từ reference repo (`requestGeminiJsonWithParts`):
+
+```python
+class GeminiClient:
+    """Client Gemini API — pattern từ Be_Fe_prompt_affvideo"""
+
+    async def request_json(self, prompt: str, ...) -> dict
+    async def request_json_with_parts(self, parts: list, ...) -> dict
+    async def analyze_video(self, video_path: Path, prompt: str) -> dict
+
+    # Internal
+    def _parse_json_response(self, raw: str) -> dict  # strip code fence
+    def _video_to_base64_parts(self, path: Path) -> list  # chunk if needed
+```
+
+Key patterns từ reference:
+- URL: `https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}`
+- Body: `{ contents: [{ parts }], generationConfig: { temperature, topP, maxOutputTokens, responseMimeType } }`
+- Response: `data.candidates[0].content.parts[].text`
+- Parse: Strip code fence → try JSON.parse → extract `{...}` fallback
+
+---
+
+#### [NEW] [video_analyzer.py](file:///D:/AutoCutAIVideo/backend/core/video_analyzer.py)
+
+Phân tích video multimodal (giống `analyzeTikTokWithGemini`):
+
+```python
+class VideoAnalyzer:
+    async def analyze(self, video_path: Path, api_key: str) -> VideoAnalysis:
+        """Gửi video + prompt phân tích cho Gemini"""
+        # 1. Convert video to base64 (chunk nếu > 20MB)
+        # 2. Build analysis prompt
+        # 3. Call gemini_client.request_json_with_parts()
+        # 4. Parse và validate kết quả
+
+    async def analyze_batch(self, videos: list[Path], api_key: str) -> list[VideoAnalysis]:
+        """Phân tích nhiều video song song"""
+```
+
+Output `VideoAnalysis`:
+- `scenes`: List scene với timestamp, description, mood, quality_score (1-10)
+- `highlights`: Khoảnh khắc nổi bật
+- `pacing`, `color_mood`, `audio_energy`
+- `suggested_cuts`: Điểm cắt gợi ý
+- `content_type`: Loại nội dung
+
+---
+
+#### [NEW] [edit_planner.py](file:///D:/AutoCutAIVideo/backend/core/edit_planner.py)
+
+AI lên kế hoạch edit:
+
+```python
+class EditPlanner:
+    async def create_plan(
+        self,
+        analyses: list[VideoAnalysis],
+        style: str,          # "tiktok" | "youtube" | "instagram"
+        target_duration: int, # seconds
+        aspect_ratio: str,    # "9:16" | "16:9" | "1:1"
+        api_key: str,
+    ) -> EditPlan:
+        """Gửi tất cả analysis cho Gemini → nhận edit plan"""
+```
+
+Output `EditPlan`:
+- `clips`: Thứ tự clip + timestamp cắt
+- `transitions`: Loại transition (fade, cut, slide, zoom)
+- `text_overlays`: Text + position + timing
+- `color_grading`: Color preset per segment
+- `speed_effects`: Slow-mo, speed ramp positions
+- `music_suggestion`: Gợi ý nhịp nhạc
+
+---
+
+#### [NEW] [video_editor.py](file:///D:/AutoCutAIVideo/backend/core/video_editor.py)
+
+Thực thi edit plan:
+- `trim_clip()` — Cắt theo timestamp
+- `merge_clips()` — Ghép clips
+- `add_transition()` — Fade, dissolve, slide, wipe
+- `add_text_overlay()` — Text với font, animation
+- `apply_color_grade()` — Brightness, contrast, saturation
+- `speed_ramp()` — Slow-mo, fast-forward
+- `resize_crop()` — Resize theo aspect ratio
+- `add_background_music()` — Mix audio
+
+---
+
+#### [NEW] [effects.py](file:///D:/AutoCutAIVideo/backend/core/effects.py)
+
+| Category | Effects |
+|----------|---------|
+| Transitions | Fade, CrossDissolve, SlideLeft/Right, ZoomIn/Out, Wipe |
+| Text | FadeIn, TypeWriter, SlideUp |
+| Color | Warm, Cool, Vintage, Cinematic, Vibrant, B&W |
+| Speed | SlowMo (0.5x), SpeedUp (1.5x, 2x), Ramp |
+
+---
+
+#### [NEW] [schemas.py](file:///D:/AutoCutAIVideo/backend/models/schemas.py)
+
+Pydantic models cho API:
+
+```python
+class UploadResponse(BaseModel):
+    project_id: str
+    videos: list[VideoInfo]
+
+class AnalyzeRequest(BaseModel):
+    project_id: str
+    api_key: str
+    model: str = "gemini-2.5-flash"
+
+class AnalyzeResponse(BaseModel):
+    analyses: list[VideoAnalysis]
+
+class EditRequest(BaseModel):
+    project_id: str
+    api_key: str
+    style: str           # "tiktok" | "youtube" | "instagram"
+    target_duration: int
+    aspect_ratio: str
+    model: str = "gemini-2.5-flash"
+
+class EditResponse(BaseModel):
+    plan: EditPlan
+    output_video_url: str
+    progress_ws_url: str
+```
+
+---
+
+#### API Endpoints
+
+| Method | Path | Mô tả |
+|--------|------|--------|
+| `POST` | `/api/upload` | Upload nhiều video files |
+| `POST` | `/api/analyze` | AI phân tích tất cả video |
+| `POST` | `/api/edit` | Tạo edit plan + render video |
+| `GET` | `/api/export/{project_id}` | Download video đã render |
+| `GET` | `/api/project/{project_id}` | Lấy thông tin project |
+| `DELETE` | `/api/project/{project_id}` | Xóa project |
+| `WS` | `/ws/progress/{project_id}` | Real-time progress |
+
+---
+
+### Frontend — Vite + React + TypeScript
+
+---
+
+#### [NEW] Frontend Vite Project
+
+Khởi tạo bằng:
+```bash
+npx -y create-vite@latest ./ --template react-ts
+```
+
+#### [NEW] [vite.config.ts](file:///D:/AutoCutAIVideo/frontend/vite.config.ts)
+
+```typescript
+export default defineConfig({
+  server: {
+    proxy: {
+      '/api': 'http://localhost:8000',
+      '/ws': { target: 'ws://localhost:8000', ws: true }
+    }
+  }
+})
+```
+
+---
+
+#### [NEW] [index.css](file:///D:/AutoCutAIVideo/frontend/src/index.css)
+
+Premium dark theme (CapCut-inspired):
+- Dark background: `#0a0a0f` → `#14141f`
+- Accent gradient: Purple `#8b5cf6` → Cyan `#06b6d4`
+- Glass morphism panels
+- Smooth transitions & micro-animations
+- Font: Inter (Google Fonts)
+
+---
+
+#### [NEW] [App.tsx](file:///D:/AutoCutAIVideo/frontend/src/App.tsx)
+
+3-step wizard flow:
+
+```
+┌─────────────┐    ┌──────────────┐    ┌──────────────┐
+│  📤 Upload   │ →  │  🤖 Analyze   │ →  │  🎬 Export    │
+│  Drop videos │    │  AI analysis  │    │  Download     │
+│  Choose style│    │  Edit plan    │    │  Preview      │
+└─────────────┘    └──────────────┘    └──────────────┘
+```
+
+---
+
+#### [NEW] Components
+
+| Component | Chức năng |
+|-----------|-----------|
+| `UploadZone.tsx` | Drag-drop multi-video, preview thumbnails, file size info |
+| `VideoPreview.tsx` | Player video + hiển thị AI analysis (scenes, mood, score) |
+| `Timeline.tsx` | Visual timeline giống CapCut (clips, transitions, text layers) |
+| `EditPlanView.tsx` | Card view AI edit plan, cho phép adjust trước khi render |
+| `StyleSelector.tsx` | Grid chọn style với preview (TikTok, YouTube, Instagram) |
+| `ProgressBar.tsx` | Real-time progress via WebSocket (analyze → plan → render) |
+| `ExportPanel.tsx` | Download button + video preview player |
+| `ApiKeyInput.tsx` | Input Gemini API key (lưu localStorage) |
+
+---
+
+#### [NEW] [api.ts](file:///D:/AutoCutAIVideo/frontend/src/services/api.ts)
+
+```typescript
+const API_BASE = '/api'
+
+export async function uploadVideos(files: File[]): Promise<UploadResponse>
+export async function analyzeProject(req: AnalyzeRequest): Promise<AnalyzeResponse>
+export async function createEdit(req: EditRequest): Promise<EditResponse>
+export async function getExportUrl(projectId: string): string
+export function connectProgress(projectId: string): WebSocket
+```
+
+---
+
+#### [NEW] [types/index.ts](file:///D:/AutoCutAIVideo/frontend/src/types/index.ts)
+
+Shared types matching backend schemas:
+- `VideoInfo`, `VideoAnalysis`, `Scene`, `Highlight`
+- `EditPlan`, `ClipSegment`, `Transition`, `TextOverlay`
+- `UploadResponse`, `AnalyzeRequest`, `EditRequest`, etc.
+
+---
+
+## Workflow người dùng
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant FE as Frontend (Vite)
+    participant BE as Backend (FastAPI)
+    participant AI as Gemini AI
+    participant FF as FFmpeg
+
+    User->>FE: Drop 4 videos + nhập API key
+    FE->>BE: POST /api/upload (multipart)
+    BE-->>FE: project_id + video info
+
+    User->>FE: Chọn style TikTok 9:16, 30s
+    FE->>BE: POST /api/analyze
+    BE->>AI: Gemini multimodal (video + prompt)
+    AI-->>BE: Video analysis JSON
+    BE-->>FE: Analysis results (via WS)
+
+    FE->>BE: POST /api/edit
+    BE->>AI: Gemini (plan edit dựa trên analysis)
+    AI-->>BE: Edit plan JSON
+    BE->>FF: Execute edit plan
+    FF-->>BE: Rendered video
+    BE-->>FE: Progress + output URL (via WS)
+
+    User->>FE: Download / Preview video
+    FE->>BE: GET /api/export/{id}
+    BE-->>FE: Video file stream
+```
+
+## Verification Plan
+
+### Backend
+```bash
+cd backend
+pip install -r requirements.txt
+python main.py  # Start FastAPI on :8000
+
+# Test API
+curl -X POST http://localhost:8000/api/upload -F "files=@video1.mp4" -F "files=@video2.mp4"
+```
+
+### Frontend
+```bash
+cd frontend
+npm install
+npm run dev  # Start Vite on :5173
+```
+
+### Integration Test
+1. Mở `http://localhost:5173`
+2. Drop 2-4 video
+3. Nhập API key → chọn style → click Analyze
+4. Xem analysis → click Edit
+5. Download video output

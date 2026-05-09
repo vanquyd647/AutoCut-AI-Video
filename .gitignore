@@ -1,0 +1,11 @@
+backend/.env
+backend/__pycache__/
+backend/**/*.pyc
+backend/storage/input/*
+backend/storage/output/*
+backend/storage/temp/*
+!backend/storage/input/.gitkeep
+!backend/storage/output/.gitkeep
+!backend/storage/temp/.gitkeep
+frontend/node_modules/
+frontend/dist/
